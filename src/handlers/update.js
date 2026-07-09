@@ -2,6 +2,7 @@ import { saveMetricsHistory } from '../database/schema.js';
 import { getServerDetail } from '../utils/cache.js';
 import { mergeMetricsIntoServer } from '../utils/metrics.js';
 import { createErrorResponse, createUnauthorizedResponse, createNotFoundResponse, createBadRequestResponse } from '../utils/errors.js';
+import { ensureServerOptimization } from '../database/indexOptimization.js';
 
 // 将最新一次上报打包成前端可直接消费的 "当前状态" 对象
 // 与 /api/server 和 /api/servers 返回的字段保持一致，便于页面直接合并
@@ -144,6 +145,7 @@ export async function handleUpdate(request, env, ctx) {
     // 从缓存中获取历史记录分区 ID
     const historyPartitionId = serverDetail.history_partition_id;
     if(!historyPartitionId) {
+      await ensureServerOptimization(env.DB, id);
       logUpdateBadRequest('Missing history_partition_id', {
         id,
         history_partition_id: serverDetail.history_partition_id
