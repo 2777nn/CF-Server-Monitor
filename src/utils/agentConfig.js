@@ -3,6 +3,7 @@ import { md5Hash } from './common.js';
 export const AGENT_CONFIG_SCHEMA_VERSION = 2;
 export const AGENT_CONFIG_SCHEMA_HEADER = 'X-Agent-Config-Schema';
 export const AGENT_CONFIG_MD5_HEADER = 'X-Agent-Config-Md5';
+export const AGENT_AUTO_UPDATE_HEADER = 'X-Agent-AutoUpdate';
 export const MAX_TRAFFIC_CORRECTION_GB = 1000000;
 
 const ALLOWED_COLLECT_INTERVALS = new Set([0, 1, 2, 5, 10]);
@@ -66,6 +67,31 @@ export function validateAgentConfigInput(input) {
 function storedInteger(value, allowedValues, fallback) {
   const number = typeof value === 'number' ? value : Number(value);
   return Number.isInteger(number) && allowedValues.has(number) ? number : fallback;
+}
+
+function normalizeAgentVersionForCompare(value) {
+  if (value === null || value === undefined) return '';
+  return String(value)
+    .trim()
+    .replace(/[^0-9A-Za-z.+_-]/g, '')
+    .replace(/^v(?=\d)/i, '')
+    .toLowerCase()
+    .slice(0, 64);
+}
+
+export function isAgentAutoUpdateEnabled(value) {
+  return String(value ?? '').trim() === '1';
+}
+
+export function shouldSendAgentUpdate(clientAgentVersion, latestAgentVersion) {
+  const current = normalizeAgentVersionForCompare(clientAgentVersion);
+  const latest = normalizeAgentVersionForCompare(latestAgentVersion);
+  return !!current && !!latest && current !== latest;
+}
+
+export function appendAgentUpdateParam(body, shouldUpdate) {
+  if (!shouldUpdate) return body;
+  return `${body ? `${body}&` : ''}update=1`;
 }
 
 function isValidIpv4(host) {

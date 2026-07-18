@@ -4,13 +4,18 @@ import { mergeMetricsIntoServer } from '../utils/metrics.js';
 import { createErrorResponse, createUnauthorizedResponse, createNotFoundResponse, createBadRequestResponse } from '../utils/errors.js';
 import { ensureServerOptimization } from '../database/indexOptimization.js';
 import { loadSiteSettings } from '../utils/settings.js';
+import { getRemoteVersion } from '../utils/version.js';
 import {
+  AGENT_AUTO_UPDATE_HEADER,
   AGENT_CONFIG_MD5_HEADER,
   AGENT_CONFIG_SCHEMA_HEADER,
   AGENT_CONFIG_SCHEMA_VERSION,
+  appendAgentUpdateParam,
   describeAgentConfig,
+  isAgentAutoUpdateEnabled,
   isValidTrafficCorrection,
-  serializeCorrection
+  serializeCorrection,
+  shouldSendAgentUpdate
 } from '../utils/agentConfig.js';
 
 // 将最新一次上报打包成前端可直接消费的 "当前状态" 对象
@@ -47,6 +52,17 @@ function normalizeAgentVersion(value) {
     .trim()
     .replace(/[^0-9A-Za-z.+_-]/g, '')
     .slice(0, 64);
+}
+
+function createAgentInstructionResponse(body, headers = {}) {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      'Cache-Control': 'no-store',
+      'Content-Type': 'application/x-www-form-urlencoded; charset=utf-8',
+      ...headers
+    }
+  });
 }
 
 function logUpdateBadRequest(reason, details = {}) {
@@ -232,8 +248,23 @@ export async function handleUpdate(request, env, ctx) {
     queueBroadcastSamples(id, broadcastSamples);
     ctx.waitUntil(_ensureBatchFlush(env));
 
+    let shouldUpdateAgent = false;
+    const autoUpdateRequested = isAgentAutoUpdateEnabled(request.headers.get(AGENT_AUTO_UPDATE_HEADER)) &&
+      isAgentAutoUpdateEnabled(serverDetail.auto_update);
+    if (autoUpdateRequested) {
+      try {
+        const remoteVersion = await getRemoteVersion();
+        shouldUpdateAgent = shouldSendAgentUpdate(agentVersion, remoteVersion?.agent || '');
+      } catch (versionError) {
+        console.warn('[Update] Failed to check agent version:', versionError?.message || versionError);
+      }
+    }
+
     const clientConfigSchema = request.headers.get(AGENT_CONFIG_SCHEMA_HEADER);
     if (clientConfigSchema !== String(AGENT_CONFIG_SCHEMA_VERSION)) {
+      if (shouldUpdateAgent) {
+        return createAgentInstructionResponse('update=1');
+      }
       return new Response('OK', {
         status: 200,
         headers: { 'Content-Type': 'text/plain; charset=utf-8' }
@@ -252,7 +283,7 @@ export async function handleUpdate(request, env, ctx) {
         [AGENT_CONFIG_MD5_HEADER]: descriptor.md5
       };
 
-      if (!md5Changed && !hasCorrection) {
+      if (!md5Changed && !hasCorrection && !shouldUpdateAgent) {
         return new Response(null, { status: 204, headers: responseHeaders });
       }
 
@@ -260,6 +291,7 @@ export async function handleUpdate(request, env, ctx) {
       if (hasCorrection) {
         body += serializeCorrection(descriptor.correction);
       }
+      body = appendAgentUpdateParam(body, shouldUpdateAgent);
 
       return new Response(body, {
         status: 200,
@@ -270,6 +302,9 @@ export async function handleUpdate(request, env, ctx) {
       });
     } catch (configError) {
       console.warn('[Update] Failed to build agent configuration:', configError?.message || configError);
+      if (shouldUpdateAgent) {
+        return createAgentInstructionResponse('update=1');
+      }
       return new Response('OK', {
         status: 200,
         headers: { 'Content-Type': 'text/plain; charset=utf-8' }
